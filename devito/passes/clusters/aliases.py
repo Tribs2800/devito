@@ -74,7 +74,6 @@ def cire(cluster, mode, sregistry, options, platform):
     t1 = 3.0*t2[x,y,z+1]
     """
     # Relevant options
-    min_cost = options['cire-mincost']
     repeats = options['cire-repeats']
 
     # Sanity checks
@@ -86,7 +85,8 @@ def cire(cluster, mode, sregistry, options, platform):
     context = cluster.exprs
     for n in reversed(range(repeats[mode])):
         # Get the callbacks
-        extract, ignore_collected, selector = callbacks_mapper[mode](context, n, min_cost)
+        extract, ignore_collected, in_writeto, selector =\
+            callbacks_mapper[mode](context, n, options)
 
         # Extract potentially aliasing expressions
         exprs, extracted = extract(cluster, sregistry)
@@ -111,7 +111,7 @@ def cire(cluster, mode, sregistry, options, platform):
             continue
 
         # Lower the chosen aliases into a Schedule
-        schedule = make_schedule(cluster, aliases, options)
+        schedule = make_schedule(cluster, aliases, in_writeto, options)
 
         # Lower the Schedule into a sequence of Clusters
         clusters, subs = process(cluster, schedule, chosen, sregistry, platform)
@@ -138,13 +138,17 @@ class Callbacks(object):
 
     mode = None
 
-    def __new__(cls, context, n, min_cost):
+    def __new__(cls, context, n, options):
+        min_cost = options['cire-mincost']
+        max_par = options['cire-maxpar']
+
         min_cost = min_cost[cls.mode]
         if callable(min_cost):
             min_cost = min_cost(n)
 
         return (partial(cls.extract, n, context, min_cost),
                 cls.ignore_collected,
+                partial(cls.in_writeto, max_par),
                 partial(cls.selector, min_cost))
 
     @classmethod
@@ -154,6 +158,10 @@ class Callbacks(object):
     @classmethod
     def ignore_collected(cls, group):
         return False
+
+    @classmethod
+    def in_writeto(cls, max_par, dim, cluster):
+        return PARALLEL in cluster.properties[dim]
 
     @classmethod
     def selector(cls, min_cost, cost, naliases):
@@ -240,6 +248,10 @@ class CallbacksSOPS(Callbacks):
     @classmethod
     def ignore_collected(cls, group):
         return len(group) <= 1
+
+    @classmethod
+    def in_writeto(cls, max_par, dim, cluster):
+        return max_par and PARALLEL in cluster.properties[dim]
 
     @classmethod
     def selector(cls, min_cost, cost, naliases):
@@ -428,14 +440,13 @@ def choose(exprs, aliases, selector):
     return chosen, others
 
 
-def make_schedule(cluster, aliases, options):
+def make_schedule(cluster, aliases, in_writeto, options):
     """
     Create a Schedule from an AliasMapper.
 
     The aliases can legally be scheduled in many different orders, but we
     privilege the one that minimizes storage while maximizing fusion.
     """
-    max_par = options['cire-maxpar']
     rotate = options['cire-rotate']
 
     items = []
@@ -445,9 +456,6 @@ def make_schedule(cluster, aliases, options):
         mapper.update({i.dim.parent: i for i in v.intervals
                        if i.dim.is_NonlinearDerived})
 
-        # Becomes True as soon as a Dimension in `ispace` is found to
-        # be independent of `intervals`
-        flag = False
         intervals = []
         sub_iterators = dict(cluster.sub_iterators)
         writeto = []
@@ -455,32 +463,22 @@ def make_schedule(cluster, aliases, options):
             try:
                 interval = mapper[i.dim]
             except KeyError:
-                if not any(i.dim in d._defines for d in mapper):
-                    # E.g., `t[0,0]<0>` in the case of t-invariant aliases,
-                    # whereas if `i.dim` is `x0_blk0` in `x0_blk0[0,0]<0>` then
-                    # we would not enter here
-                    flag = True
-
-                intervals.append(i)
-                continue
+                interval = i
 
             assert i.stamp >= interval.stamp
 
-            # Does `i.dim` actually need to be a write-to Dimension ?
-            if flag or interval != interval.zero():
-                # Yes, so we also have to adjust the Interval's stamp.
-                # E.g., `i=x[0,0]<1>` and `interval=x[-4,4]<0>`. We need to
-                # use `<1>` which is the actual stamp used in `cluster`
+            if writeto or interval != interval.zero():  #TODO: != i ??
+                # `i.dim` is necessarily part of the write-to region, so
+                # we have to adjust the Interval's stamp. For example, consider
+                # `i=x[0,0]<1>` and `interval=x[-4,4]<0>`; here we need to
+                # use `<1>` as stamp, which is what `cluster` has
                 interval = interval.lift(i.stamp)
-            elif max_par and PARALLEL in cluster.properties[i.dim]:
-                # Not necessarily, but with `max_par` the user is
-                # expressing the wish to trade-off storage for parallelism
+            elif in_writeto(i.dim, cluster):
                 interval = interval.lift(i.stamp + 1)
             else:
                 interval = None
 
             if interval:
-                flag = True
                 writeto.append(interval)
                 intervals.append(interval)
 
