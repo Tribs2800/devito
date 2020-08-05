@@ -463,7 +463,8 @@ def make_schedule(cluster, aliases, in_writeto, options):
             try:
                 interval = mapper[i.dim]
             except KeyError:
-                interval = i
+                intervals.append(i)
+                continue
 
             assert i.stamp >= interval.stamp
 

@@ -1215,6 +1215,7 @@ class TestAliases(object):
 
         op = Operator(eqns, opt=('advanced', {'cire-repeats-inv': 2,
                                               'cire-mincost-inv': 28}))
+        from IPython import embed; embed()
 
         trees = retrieve_iteration_tree(op)
         assert len(trees) == 3
