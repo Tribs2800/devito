@@ -455,25 +455,25 @@ def make_schedule(cluster, aliases, in_writeto, options):
     max_par = options['cire-maxpar']
 
     items = []
-    index_mapper = {}
+    dmapper = {}
     for alias, v in aliases.items():
-        mapper = {i.dim: i for i in v.intervals}
-        mapper.update({i.dim.parent: i for i in v.intervals
-                       if i.dim.is_NonlinearDerived})
+        imapper = {**{i.dim: i for i in v.intervals},
+                   **{i.dim.parent: i for i in v.intervals if i.dim.is_NonlinearDerived}}
 
         intervals = []
-        sub_iterators = dict(cluster.sub_iterators)
         writeto = []
+        sub_iterators = dict(cluster.sub_iterators)
         for i in cluster.ispace.intervals:
             try:
-                interval = mapper[i.dim]
+                interval = imapper[i.dim]
             except KeyError:
+                # E.g., `x0_blk0` or (`a[y_m+1]` => `y not in imapper`)
                 intervals.append(i)
                 continue
 
             assert i.stamp >= interval.stamp
 
-            if writeto or interval != interval.zero() or in_writeto(i.dim, cluster):  #TODO: != i ??
+            if writeto or interval != interval.zero() or in_writeto(i.dim, cluster):
                 # `i.dim` is necessarily part of the write-to region, so
                 # we have to adjust the Interval's stamp. For example, consider
                 # `i=x[0,0]<1>` and `interval=x[-4,4]<0>`; here we need to
@@ -492,29 +492,25 @@ def make_schedule(cluster, aliases, in_writeto, options):
                 # E.g., r[xs][ys][z] => both `xs` and `ys` must start at 0,
                 # not at `x0_blk0`
                 if i.dim.is_Incr:
-                    d = ShiftedDimension(i.dim, "%ss" % i.dim.name)
-                    d = index_mapper.setdefault(i.dim, d)
+                    try:
+                        d = dmapper[i.dim]
+                    except KeyError:
+                        d = dmapper[i.dim] = ShiftedDimension(i.dim, "%ss" % i.dim.name)
                     sub_iterators[i.dim] = as_tuple(sub_iterators.get(i.dim)) + (d,)
             else:
                 intervals.append(i)
 
-        if writeto:
-            writeto = IntervalGroup(writeto, cluster.ispace.relations)
-        else:
-            #TODO NOW PROBABLY DROPPABLE
-            # E.g., an `alias` having 0-distance along all Dimensions
-            writeto = IntervalGroup(v.intervals, cluster.ispace.relations)
+        intervals = IntervalGroup(intervals, cluster.ispace.relations)
+        writeto = IntervalGroup(writeto, cluster.ispace.relations)
 
-        # Construct the alias IterationSpace
-        ispace = IterationSpace(IntervalGroup(intervals, cluster.ispace.relations),
-                                sub_iterators, cluster.directions)
+        ispace = IterationSpace(intervals, sub_iterators, cluster.directions)
 
         items.append(ScheduledAlias(alias, writeto, ispace, v.aliaseds, v.distances))
 
     # As by contract (see docstring), smaller write-to regions go in first
     processed = sorted(items, key=lambda i: len(i.writeto))
 
-    return Schedule(index_mapper, *processed)
+    return Schedule(dmapper, *processed)
 
 
 def process(cluster, schedule, chosen, sregistry, platform):
@@ -551,10 +547,10 @@ def process(cluster, schedule, chosen, sregistry, platform):
 
         # The access Dimensions may differ from `writeto.dimensions`. This may
         # happen e.g. if ShiftedDimensions are introduced (`a[x,y]` -> `a[xs,y]`)
-        adims = [schedule.index_mapper.get(d, d) for d in writeto.dimensions]
+        adims = [schedule.dmapper.get(d, d) for d in writeto.dimensions]
 
         # The expression computing `alias`
-        adims = [schedule.index_mapper.get(d, d) for d in writeto.dimensions]  # x -> xs
+        adims = [schedule.dmapper.get(d, d) for d in writeto.dimensions]  # x -> xs
         indices = [d - (0 if writeto[d].is_Null else writeto[d].lower) for d in adims]
         expression = Eq(array[indices], uxreplace(alias, subs))
 
@@ -600,7 +596,7 @@ def rebuild(cluster, others, schedule, subs):
     exprs = [uxreplace(e, subs) for e in others]
 
     # Add any new ShiftedDimension to the IterationSpace
-    ispace = cluster.ispace.augment(schedule.index_mapper)
+    ispace = cluster.ispace.augment(schedule.dmapper)
 
     # Rebuild the DataSpace to include the new symbols
     accesses = detect_accesses(exprs)
@@ -862,9 +858,9 @@ class Schedule(tuple):
     A total ordering of aliases with some metadata attached.
     """
 
-    def __new__(cls, index_mapper, *items):
+    def __new__(cls, dmapper, *items):
         obj = super(Schedule, cls).__new__(cls, items)
-        obj.index_mapper = index_mapper
+        obj.dmapper = dmapper
         return obj
 
 
