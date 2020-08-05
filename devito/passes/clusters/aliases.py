@@ -555,7 +555,10 @@ def process(cluster, schedule, chosen, sregistry, platform):
         # Create the substitution rules so that we can use the newly created
         # temporary in place of the aliasing expressions
         for aliased, distance in zip(aliaseds, distances):
-            assert all(i.dim in distance.labels for i in writeto)
+            try:
+                assert all(i.dim in distance.labels for i in writeto)
+            except:
+                from IPython import embed; embed()
 
             indices = [d - i.lower + distance[i.dim] for d, i in zip(adims, writeto)]
             subs[aliased] = array[indices]
