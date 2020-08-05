@@ -161,7 +161,7 @@ class Callbacks(object):
 
     @classmethod
     def in_writeto(cls, max_par, dim, cluster):
-        return PARALLEL in cluster.properties[dim]
+        raise NotImplementedError
 
     @classmethod
     def selector(cls, min_cost, cost, naliases):
@@ -194,6 +194,10 @@ class CallbacksInvariants(Callbacks):
         processed = [uxreplace(e, mapper) for e in cluster.exprs]
 
         return extracted + processed, extracted
+
+    @classmethod
+    def in_writeto(cls, max_par, dim, cluster):
+        return PARALLEL in cluster.properties[dim]
 
     @classmethod
     def selector(cls, min_cost, cost, naliases):
@@ -448,6 +452,7 @@ def make_schedule(cluster, aliases, in_writeto, options):
     privilege the one that minimizes storage while maximizing fusion.
     """
     rotate = options['cire-rotate']
+    max_par = options['cire-maxpar']
 
     items = []
     index_mapper = {}
@@ -468,18 +473,17 @@ def make_schedule(cluster, aliases, in_writeto, options):
 
             assert i.stamp >= interval.stamp
 
-            if writeto or interval != interval.zero():  #TODO: != i ??
+            if writeto or interval != interval.zero() or in_writeto(i.dim, cluster):  #TODO: != i ??
                 # `i.dim` is necessarily part of the write-to region, so
                 # we have to adjust the Interval's stamp. For example, consider
                 # `i=x[0,0]<1>` and `interval=x[-4,4]<0>`; here we need to
-                # use `<1>` as stamp, which is what `cluster` has
+                # use `<1>` as stamp, which is what appears in `cluster`
                 interval = interval.lift(i.stamp)
-            elif in_writeto(i.dim, cluster):
-                interval = interval.lift(i.stamp + 1)
-            else:
-                interval = None
 
-            if interval:
+                # We further bump the interval stamp if we were requested to trade
+                # fusion for more collapse-parallelism
+                interval = interval.lift(interval.stamp + int(max_par))
+
                 writeto.append(interval)
                 intervals.append(interval)
 
@@ -497,6 +501,7 @@ def make_schedule(cluster, aliases, in_writeto, options):
         if writeto:
             writeto = IntervalGroup(writeto, cluster.ispace.relations)
         else:
+            #TODO NOW PROBABLY DROPPABLE
             # E.g., an `alias` having 0-distance along all Dimensions
             writeto = IntervalGroup(v.intervals, cluster.ispace.relations)
 
@@ -556,10 +561,7 @@ def process(cluster, schedule, chosen, sregistry, platform):
         # Create the substitution rules so that we can use the newly created
         # temporary in place of the aliasing expressions
         for aliased, distance in zip(aliaseds, distances):
-            try:
-                assert all(i.dim in distance.labels for i in writeto)
-            except:
-                from IPython import embed; embed()
+            assert all(i.dim in distance.labels for i in writeto)
 
             indices = [d - i.lower + distance[i.dim] for d, i in zip(adims, writeto)]
             subs[aliased] = array[indices]
