@@ -1,5 +1,6 @@
 from collections import OrderedDict, defaultdict, namedtuple
 from functools import partial
+from itertools import groupby
 
 from cached_property import cached_property
 import numpy as np
@@ -11,7 +12,8 @@ from devito.passes.clusters.utils import cluster_pass, make_is_time_invariant
 from devito.symbolics import (compare_ops, estimate_cost, q_constant, q_terminalop,
                               retrieve_indexed, search, uxreplace)
 from devito.tools import EnrichedTuple, as_tuple, flatten, split
-from devito.types import Array, Eq, ShiftedDimension, Scalar
+from devito.types import (Array, Eq, Scalar, ModuloDimension, IncrDimension,
+                          ShiftedDimension, CustomDimension)
 
 __all__ = ['cire']
 
@@ -112,6 +114,7 @@ def cire(cluster, mode, sregistry, options, platform):
 
         # Lower the chosen aliases into a Schedule
         schedule = make_schedule(cluster, aliases, in_writeto, options)
+        #schedule = optimize_schedule(schedule, options)
 
         # Lower the Schedule into a sequence of Clusters
         clusters, subs = process(cluster, schedule, chosen, sregistry, platform)
@@ -454,7 +457,6 @@ def make_schedule(cluster, aliases, in_writeto, options):
     The aliases can legally be scheduled in many different orders, but we
     privilege the one that minimizes storage while maximizing fusion.
     """
-    rotate = options['cire-rotate']
     max_par = options['cire-maxpar']
 
     items = []
@@ -527,6 +529,59 @@ def make_schedule(cluster, aliases, in_writeto, options):
     processed = sorted(items, key=lambda i: len(i.writeto))
 
     return Schedule(*processed, dmapper=dmapper)
+
+
+def optimize_schedule(schedule, options):
+    rotate = options['cire-rotate']
+
+    if not rotate:
+        return schedule
+
+    processed = []
+    for writeto, g in groupby(schedule, key=lambda i: i.writeto):
+        if len(writeto) < 2:
+            continue
+
+        candidate = writeto[0]
+        d = candidate.dim
+        if not d.is_Incr:
+            continue
+
+        nslots = candidate.min_size
+        assert nslots > 0
+
+        iis = candidate.lower
+        iib = candidate.upper
+
+        cd = CustomDimension(name='i', symbolic_size=nslots)
+        ii = ModuloDimension(d, offset=iis, incr=iib, name='ii')
+
+        xsi = ModuloDimension(d, cd - iis, nslots, name='%si' % d)  #TODO: check: -iis or what?
+        xss = []
+        for i in g:
+            # Update `indicess` to use `xs0`, `xs1`, ...
+            indicess = []
+            mds = []
+            for indices in i.indicess:
+                offset = indices[0] - d
+                md = ModuloDimension(d, offset, nslots, name='%s%d' % (d.name, offset))
+                mds.append(md)
+                indicess.append([md] + indices[1:])
+
+            # Update writeto switching `d` to `xsi`
+            #TODO ISSUE: currently xs[-1, 0] ... so we gotta drop ShiftedDim finally
+            # so that we are here with xs[0, 0] and we can safely replace with `xsi`
+            pass
+
+            # Transform alias adding `i`
+            alias = i.alias.xreplace({d.parent: d.parent + cd})
+
+            # Update ispace adding `i` in between `x` and `y`
+            #TODO ISSUE: can't get a proper ordering...
+            ig = IntervalGroup(Interval(cd, 0, 0), relations=[(d.parent, cd, writeto[1].dim)])
+            pass
+
+    return schedule
 
 
 def process(cluster, schedule, chosen, sregistry, platform):
