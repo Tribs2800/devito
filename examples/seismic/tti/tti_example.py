@@ -17,7 +17,7 @@ def tti_setup(shape=(50, 50, 50), spacing=(20.0, 20.0, 20.0), tn=250.0,
     # Source and receiver geometries
     geometry = setup_geometry(model, tn)
 
-    return AnisotropicWaveSolver(model, geometry, space_order=space_order)
+    return AnisotropicWaveSolver(model, geometry, space_order=space_order, **kwargs)
 
 
 def run(shape=(50, 50, 50), spacing=(20.0, 20.0, 20.0), tn=250.0,
