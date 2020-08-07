@@ -560,10 +560,11 @@ def optimize_schedule(schedule, options):
         iis = candidate.lower
         iib = candidate.upper
 
-        cd = CustomDimension(name='i', symbolic_size=nslots)
         ii = ModuloDimension(ds, offset=iis, incr=iib, name='ii')
+        cd = CustomDimension(name='i', symbolic_min=ii, symbolic_max=iib,
+                             symbolic_size=nslots)
 
-        dsi = ModuloDimension(ds, cd - iis, nslots, name='%si' % ds)  #TODO: check: -iis or what?
+        dsi = ModuloDimension(cd, ds - iis, nslots, name='%si' % ds)  #TODO: check: -iis or what?
         for i in g:
             # Update `indicess` to use `xs0`, `xs1`, ...
             indicess = []
