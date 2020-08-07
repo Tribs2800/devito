@@ -5,9 +5,9 @@ from itertools import groupby
 from cached_property import cached_property
 import numpy as np
 
-from devito.ir import (PARALLEL, ROUNDABLE, DataSpace, IterationInstance, IterationSpace,
-                       Interval, IntervalGroup, LabeledVector, Scope, detect_accesses,
-                       build_intervals)
+from devito.ir import (PARALLEL, ROUNDABLE, DataSpace, Forward, IterationInstance,
+                       IterationSpace, Interval, IntervalGroup, LabeledVector, Scope,
+                       detect_accesses, build_intervals)
 from devito.passes.clusters.utils import cluster_pass, make_is_time_invariant
 from devito.symbolics import (compare_ops, estimate_cost, q_constant, q_terminalop,
                               retrieve_indexed, search, uxreplace)
@@ -114,7 +114,7 @@ def cire(cluster, mode, sregistry, options, platform):
 
         # AliasMapper -> Schedule -> [Clusters]
         schedule = make_schedule(cluster, aliases, in_writeto, options)
-        #schedule = optimize_schedule(schedule, options)
+        schedule = optimize_schedule(schedule, options)
         clusters, subs = lower_schedule(cluster, schedule, chosen, sregistry, platform)
 
         # Rebuild `cluster` so as to use the newly created aliases
@@ -547,8 +547,9 @@ def optimize_schedule(schedule, options):
             continue
 
         candidate = k[ridx]
+        d = candidate.dim
         try:
-            d = schedule.dmapper[candidate.dim]
+            ds = schedule.dmapper[d]
         except KeyError:
             # Can't do anything if it's not an IncrDimension over a block
             continue
@@ -560,36 +561,36 @@ def optimize_schedule(schedule, options):
         iib = candidate.upper
 
         cd = CustomDimension(name='i', symbolic_size=nslots)
-        ii = ModuloDimension(d, offset=iis, incr=iib, name='ii')
+        ii = ModuloDimension(ds, offset=iis, incr=iib, name='ii')
 
-        dsi = ModuloDimension(d, cd - iis, nslots, name='%si' % d)  #TODO: check: -iis or what?
+        dsi = ModuloDimension(ds, cd - iis, nslots, name='%si' % ds)  #TODO: check: -iis or what?
         for i in g:
             # Update `indicess` to use `xs0`, `xs1`, ...
             indicess = []
             for indices in i.indicess:
-                offset = indices[ridx] - d  #TODO: Get here with LabeledVector, not list?
-                md = ModuloDimension(d, offset, nslots, name='%s%d' % (d.name, offset))
+                offset = indices[ridx] - ds  #TODO: Get here with LabeledVector, not list?
+                md = ModuloDimension(ds, offset, nslots, name='%s%d' % (ds.name, offset))
                 indicess.append([md] + indices[ridx + 1:])
 
-            # Update writeto switching `d` to `dsi`
-            intervals = k.intervals.switch(candidate.dim, dsi).zero()
+            # Update `writeto` by switching `d` to `dsi`
+            intervals = k.intervals.switch(d, dsi).zero()
             sub_iterators = dict(k.sub_iterators)
-            sub_iterators[candidate.dim] = dsi
+            sub_iterators[d] = dsi
             writeto = IterationSpace(intervals, sub_iterators)
 
-            # Transform alias adding `i`
-            alias = i.alias.xreplace({candidate.dim: candidate.dim + cd})
+            # Transform `alias` by adding `i`
+            alias = i.alias.xreplace({d: d + cd})
 
-            # Update ispace adding `i` in between `x` and `y`
-            #TODO ISSUE: can't get a proper ordering...
-            ig = IntervalGroup(Interval(cd, 0, 0), relations=[(candidate.dim, cd, writeto[1].dim)])
-            #sub_iterators = {candidate.dim: [indices[ridx] for indices in indicess],
-            #                 cd: dsi}
-            #ispace = ispace.augment(sub_iterators)
-            from IPython import embed; embed()
-            pass
+            # Extend `ispace` to iterate over rotations
+            d1 = writeto[ridx+1].dim  # Note: we're by construction in-bounds here
+            intervals = IntervalGroup(Interval(cd, 0, 0), relations={(d, cd, d1)})
+            rispace = IterationSpace(intervals, {cd: dsi}, {cd: Forward})
+            aispace = i.ispace.augment({d: v[ridx] for v in indicess})
+            ispace = IterationSpace.union(rispace, aispace)
 
-    return schedule
+            processed.append(ScheduledAlias(alias, writeto, ispace, i.aliaseds, indicess))
+
+    return Schedule(*processed, dmapper=schedule.dmapper)
 
 
 def lower_schedule(cluster, schedule, chosen, sregistry, platform):
@@ -613,7 +614,7 @@ def lower_schedule(cluster, schedule, chosen, sregistry, platform):
         # Aside from ugly generated code, the reason we do not rather shift the
         # indices is that it prevents future passes to transform the loop bounds
         # (e.g., MPI's comp/comm overlap does that)
-        dimensions = [d.parent if d.is_Sub else d for d in writeto.dimensions]
+        dimensions = [d.parent if d.is_Sub else d for d in writeto.itdimensions]
 
         # The halo of the Array
         halo = [(abs(i.lower), abs(i.upper)) for i in writeto]
@@ -621,7 +622,7 @@ def lower_schedule(cluster, schedule, chosen, sregistry, platform):
         # The data sharing mode of the Array. It can safely be `shared` only if
         # all of the PARALLEL `cluster` Dimensions appear in `writeto`
         parallel = [d for d, v in cluster.properties.items() if PARALLEL in v]
-        sharing = 'shared' if set(parallel) == set(writeto.dimensions) else 'local'
+        sharing = 'shared' if set(parallel) == set(writeto.itdimensions) else 'local'
 
         # The temporary Array that will store `alias`
         array = Array(name=sregistry.make_name(), dimensions=dimensions, halo=halo,
