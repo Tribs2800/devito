@@ -112,12 +112,10 @@ def cire(cluster, mode, sregistry, options, platform):
             # Do not waste time
             continue
 
-        # Lower the chosen aliases into a Schedule
+        # AliasMapper -> Schedule -> [Clusters]
         schedule = make_schedule(cluster, aliases, in_writeto, options)
         #schedule = optimize_schedule(schedule, options)
-
-        # Lower the Schedule into a sequence of Clusters
-        clusters, subs = process(cluster, schedule, chosen, sregistry, platform)
+        clusters, subs = lower_schedule(cluster, schedule, chosen, sregistry, platform)
 
         # Rebuild `cluster` so as to use the newly created aliases
         rebuilt = rebuild(cluster, others, schedule, subs)
@@ -532,19 +530,27 @@ def make_schedule(cluster, aliases, in_writeto, options):
 
 
 def optimize_schedule(schedule, options):
+    """
+    Rewrite the schedule for performance optimization.
+    """
     rotate = options['cire-rotate']
 
     if not rotate:
         return schedule
 
+    # Rotations, if any, occur along the outermost Dimension
+    ridx = 0
+
     processed = []
-    for writeto, g in groupby(schedule, key=lambda i: i.writeto):
-        if len(writeto) < 2:
+    for k, g in groupby(schedule, key=lambda i: i.writeto):
+        if len(k) < 2:
             continue
 
-        candidate = writeto[0]
-        d = candidate.dim
-        if not d.is_Incr:
+        candidate = k[ridx]
+        try:
+            d = schedule.dmapper[candidate.dim]
+        except KeyError:
+            # Can't do anything if it's not an IncrDimension over a block
             continue
 
         nslots = candidate.min_size
@@ -556,35 +562,40 @@ def optimize_schedule(schedule, options):
         cd = CustomDimension(name='i', symbolic_size=nslots)
         ii = ModuloDimension(d, offset=iis, incr=iib, name='ii')
 
-        xsi = ModuloDimension(d, cd - iis, nslots, name='%si' % d)  #TODO: check: -iis or what?
-        xss = []
+        dsi = ModuloDimension(d, cd - iis, nslots, name='%si' % d)  #TODO: check: -iis or what?
         for i in g:
             # Update `indicess` to use `xs0`, `xs1`, ...
             indicess = []
-            mds = []
             for indices in i.indicess:
-                offset = indices[0] - d
+                offset = indices[ridx] - d  #TODO: Get here with LabeledVector, not list?
                 md = ModuloDimension(d, offset, nslots, name='%s%d' % (d.name, offset))
-                mds.append(md)
-                indicess.append([md] + indices[1:])
+                indicess.append([md] + indices[ridx + 1:])
 
-            # Update writeto switching `d` to `xsi`
-            #TODO ISSUE: currently xs[-1, 0] ... so we gotta drop ShiftedDim finally
-            # so that we are here with xs[0, 0] and we can safely replace with `xsi`
-            pass
+            # Update writeto switching `d` to `dsi`
+            intervals = k.intervals.switch(candidate.dim, dsi).zero()
+            sub_iterators = dict(k.sub_iterators)
+            sub_iterators[candidate.dim] = dsi
+            writeto = IterationSpace(intervals, sub_iterators)
 
             # Transform alias adding `i`
-            alias = i.alias.xreplace({d.parent: d.parent + cd})
+            alias = i.alias.xreplace({candidate.dim: candidate.dim + cd})
 
             # Update ispace adding `i` in between `x` and `y`
             #TODO ISSUE: can't get a proper ordering...
-            ig = IntervalGroup(Interval(cd, 0, 0), relations=[(d.parent, cd, writeto[1].dim)])
+            ig = IntervalGroup(Interval(cd, 0, 0), relations=[(candidate.dim, cd, writeto[1].dim)])
+            #sub_iterators = {candidate.dim: [indices[ridx] for indices in indicess],
+            #                 cd: dsi}
+            #ispace = ispace.augment(sub_iterators)
+            from IPython import embed; embed()
             pass
 
     return schedule
 
 
-def process(cluster, schedule, chosen, sregistry, platform):
+def lower_schedule(cluster, schedule, chosen, sregistry, platform):
+    """
+    Turn a Schedule into a sequence of Clusters.
+    """
     clusters = []
     subs = {}
     for alias, writeto, ispace, aliaseds, indicess in schedule:
