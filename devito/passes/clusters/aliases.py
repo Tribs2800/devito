@@ -586,7 +586,8 @@ def optimize_schedule(schedule, options):
             d1 = writeto[ridx+1].dim  # Note: we're by construction in-bounds here
             intervals = IntervalGroup(Interval(cd, 0, 0), relations={(d, cd, d1)})
             rispace = IterationSpace(intervals, {cd: dsi}, {cd: Forward})
-            aispace = i.ispace.augment({d: v[ridx] for v in indicess})
+            aispace = i.ispace.zero(d)
+            aispace = aispace.augment({d: [v[ridx] for v in indicess] + [ii]})
             ispace = IterationSpace.union(rispace, aispace)
 
             processed.append(ScheduledAlias(alias, writeto, ispace, i.aliaseds, indicess))
@@ -656,6 +657,7 @@ def lower_schedule(cluster, schedule, chosen, sregistry, platform):
 
         # Optimization: if possible, the innermost IterationInterval is
         # rounded up to a multiple of the vector length
+        #TODO: MOVE THIS TO OPTIMIZE_SCHEDULE
         try:
             it = ispace.itintervals[-1]
             if ROUNDABLE in cluster.properties[it.dim]:
