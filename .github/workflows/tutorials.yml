@@ -12,7 +12,7 @@ jobs:
       DEVITO_LANGUAGE: ${{ matrix.language }}
       DEVITO_BACKEND: "core"
       PYTHON_VERSION: "3.7"
-      OMP_NUM_THREADS: 0
+      OMP_NUM_THREADS: 2
       RUN_CMD: ""
 
     strategy:
@@ -28,7 +28,7 @@ jobs:
 
         include:
           - name: tutos-ubuntu-gcc-py37
-            os: ubuntu-16.04
+            os: ubuntu-latest
             compiler: gcc-7
             language: "openmp"
 
@@ -77,6 +77,7 @@ jobs:
     - name: Install dependencies
       if: matrix.name != 'tutos-docker-gcc-py36'
       run: |
+        sudo apt update && sudo apt upgrade -y
         python -m pip install --upgrade pip
         pip install -e .
         pip install matplotlib
