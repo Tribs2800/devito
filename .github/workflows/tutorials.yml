@@ -12,6 +12,7 @@ jobs:
       DEVITO_LANGUAGE: ${{ matrix.language }}
       DEVITO_BACKEND: "core"
       PYTHON_VERSION: "3.7"
+      OMP_NUM_THREADS: 0
       RUN_CMD: ""
 
     strategy:
