@@ -560,8 +560,6 @@ def optimize_schedule(schedule, options):
         iis = candidate.lower
         iib = candidate.upper
 
-        #TODO: not the prettiest...
-        #TODO NEED EXTENSION OF MODULO DIMENSION THAT WON'T APPLY OFFSET TO ROOT
         ii = ModuloDimension(ds, iis, incr=iib, name='ii')
         cd = CustomDimension(name='i', symbolic_min=ii, symbolic_max=iib, symbolic_size=n)
 
