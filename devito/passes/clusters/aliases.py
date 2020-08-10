@@ -554,23 +554,24 @@ def optimize_schedule(schedule, options):
             # Can't do anything if it's not an IncrDimension over a block
             continue
 
-        nslots = candidate.min_size
-        assert nslots > 0
+        n = candidate.min_size
+        assert n > 0
 
         iis = candidate.lower
         iib = candidate.upper
 
-        ii = ModuloDimension(ds, offset=iis, incr=iib, name='ii')
-        cd = CustomDimension(name='i', symbolic_min=ii, symbolic_max=iib,
-                             symbolic_size=nslots)
+        #TODO: not the prettiest...
+        #TODO NEED EXTENSION OF MODULO DIMENSION THAT WON'T APPLY OFFSET TO ROOT
+        ii = ModuloDimension(ds, iis, incr=iib, name='ii')
+        cd = CustomDimension(name='i', symbolic_min=ii, symbolic_max=iib, symbolic_size=n)
 
-        dsi = ModuloDimension(cd, ds - iis, nslots, name='%si' % ds)  #TODO: check: -iis or what?
+        dsi = ModuloDimension(cd, cd + ds - iis, n, name='%si' % ds)  #TODO: check: -iis or what?
         for i in g:
             # Update `indicess` to use `xs0`, `xs1`, ...
             indicess = []
             for indices in i.indicess:
-                offset = indices[ridx] - ds  #TODO: Get here with LabeledVector, not list?
-                md = ModuloDimension(ds, offset, nslots, name='%s%d' % (ds.name, offset))
+                name = '%s%d' % (ds.name, indices[ridx] - ds)
+                md = ModuloDimension(ds, indices[ridx], n, name=name)
                 indicess.append([md] + indices[ridx + 1:])
 
             # Update `writeto` by switching `d` to `dsi`
